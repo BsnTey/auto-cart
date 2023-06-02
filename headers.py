@@ -1,8 +1,8 @@
 from fake_useragent import UserAgent
 
 class Headers:
-    def __init__(self):
-        self.user_agent = UserAgent().chrome
+    def __init__(self, user_agent):
+        self.user_agent = user_agent
 
 
     def get_general_headers(self):

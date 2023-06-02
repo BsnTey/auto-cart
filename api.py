@@ -8,8 +8,8 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 
 class ApiSiteSM:
-    def __init__(self, cookies, proxies):
-        self.headers_obj = Headers()
+    def __init__(self, user_agent, cookies, proxies):
+        self.headers_obj = Headers(user_agent)
         self.cookies = cookies
         self.headers = self.headers_obj.get_general_headers()
 
