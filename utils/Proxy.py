@@ -3,11 +3,7 @@ import re
 
 
 class Proxy:
-    def __init__(self):
-        with open(r'C:\Users\kiril\Desktop\REG\Checker\proxy.txt', 'r') as f:
-            proxies = f.readlines()
-        proxy = random.choice(proxies).strip()
-
+    def __init__(self, proxy):
         matches = re.match(r'socks5://(\w+):(\w+)@([\d.]+):(\d+)', proxy)
         if matches:
             PROXY_USER = matches.group(1)

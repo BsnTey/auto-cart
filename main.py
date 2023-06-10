@@ -7,8 +7,10 @@ import random
 import secrets
 import string
 import concurrent.futures
+import multiprocessing
+import traceback
 
-
+from selenium.common import ElementClickInterceptedException
 from selenium_stealth import stealth
 import undetected_chromedriver as webdriver
 from utils.CustomChrome import ProxyExtension
@@ -16,59 +18,63 @@ from utils.Proxy import Proxy
 from selenium.webdriver.common.by import By
 from api import ApiSiteSM
 from utils.get_product_values import get_product_values
-from utils.Excel import Excel
+from utils.find_product import find_product_catalog, find_product_view
 from utils.IOTxt import IOTxt
 from utils.UserAgents import UserAgents
 
-excel = Excel(r'C:\Users\kiril\Desktop\SM\Auto_Cart\Cookie\Befor_Check.xlsx',
-              r'C:\Users\kiril\Desktop\SM\Auto_Cart\Cookie\After_Check.xlsx')
 txt = IOTxt(r'C:\Users\kiril\Desktop\SM\Auto_Cart\Cookie\items.txt')
+# excel = Excel(r'C:\Users\kiril\Desktop\SM\Auto_Cart\Cookie\Befor_Check.xlsx',
+#               r'C:\Users\kiril\Desktop\SM\Auto_Cart\Cookie\After_Check.xlsx')
+
 user_agent = UserAgents()
+is_point_successful = False
 
 
-async def main():
-    cookie_excel = []
-    is_point_successful = False
-
+async def main(proxy, cookie):
+    global is_point_successful
     try:
-        is_count = excel.check_rows_exist()
-        if not is_count:
-            raise ValueError("The rows in the table have ended")
 
-        proxy_obj = Proxy()
-
+        proxy_obj = Proxy(proxy)
         proxy_url = proxy_obj.proxy
         proxy = proxy_obj.proxy_ProxyExtension
 
-        proxy_extension = ProxyExtension(*proxy)
-        ua = user_agent.choice()
-        options = webdriver.ChromeOptions()
-        options.add_argument(f"--load-extension={proxy_extension.directory}")
+        for i in range(2):
+            try:
 
+                proxy_extension = ProxyExtension(*proxy)
+                ua = user_agent.choice()
+                options = webdriver.ChromeOptions()
+                options.add_argument(f"--load-extension={proxy_extension.directory}")
+                driver = webdriver.Chrome(options=options)
 
-        driver = webdriver.Chrome(options=options)
+                # driver.set_page_load_timeout(10)
+                stealth(driver,
+                        user_agent=ua,
+                        languages=["ru-RU", "ru"],
+                        vendor="Google Inc.",
+                        platform="Wind32",
+                        webgl_vendor="Intel Inc.",
+                        renderer="Intel Iris OpenGL Engine",
+                        fix_hairline=True
+                        )
 
-        # driver.set_page_load_timeout(10)
-        stealth(driver,
-                user_agent=ua,
-                languages=["ru-RU", "ru"],
-                vendor="Google Inc.",
-                platform="Wind32",
-                webgl_vendor="Intel Inc.",
-                renderer="Intel Iris OpenGL Engine",
-                fix_hairline=True
-                )
+                # cookie_excel = excel.get_excel()
 
-        cookie_excel = excel.get_excel()
+                driver.get("https://www.sportmaster.ru/")
+                # driver.get("https://2ip.ru/")
+                break
+            except:
+                if 'driver' in locals():
+                    driver.close()
+                    driver.quit()
+                    del driver
 
-        driver.get("https://www.sportmaster.ru/")
-        # driver.get("https://2ip.ru/")
-
-        cookies = json.loads(cookie_excel[2])
+        cookies = json.loads(cookie)
         for cookie in cookies:
             driver.add_cookie(cookie)
 
         await asyncio.sleep(5)
+        driver.set_window_position(-300, 0)
         dump_cookie = driver.get_cookies()
         cookies = {cookie['name']: cookie['value'] for cookie in dump_cookie}
 
@@ -78,41 +84,27 @@ async def main():
         if "phone" not in response_body:
             raise ValueError("Error: auth")
 
-        product_id = None
         while True:
-            for i in range(3):
-                status_code, response_body = await api_requests.catalog_api()
-                if status_code != 200:
-                    raise ValueError("Error: catalog_api")
-
-                product_id, product_ware_id = get_product_values(response_body)
+            for i in range(10):
+                product_id, product_ware_id = await find_product_catalog(api_requests)
                 if not product_id:
-                    print("прошел круг catalog_api")
                     continue
-                else:
+
+                if txt.check_product_number(product_id):
+                    continue
+
+                is_valid_product_id = await find_product_view(api_requests, product_id)
+                if is_valid_product_id:
                     break
+
             if not product_id:
-                print(response_body)
-                raise ValueError("Error: product_id - get_product_values")
+                raise ValueError("Error: product_id")
 
-            if txt.check_product_number(product_id):
-                continue
+            driver.get(f'https://www.sportmaster.ru/product/{product_id}/')
+            await asyncio.sleep(5)
 
-            status_code, response_body = await api_requests.product_view(product_id)
-
-            if status_code != 200:
-                raise ValueError("Error: product_view")
-
-            marks = response_body.get("marks")
-            if "BONUSNA" not in marks:
-                break
-
-        driver.get(f'https://www.sportmaster.ru/product/{product_id}/')
-        await asyncio.sleep(5)
-
-        buttons = driver.find_elements(By.CSS_SELECTOR, '[data-selenium="product-sizes-item"]')
-
-        while True:
+            driver.execute_script("window.scrollBy(0, 200);")
+            buttons = driver.find_elements(By.CSS_SELECTOR, '[data-selenium="product-sizes-item"]')
             # Фильтрация кнопок, удаляя кнопки с классом "sm-product-size__button--disabled"
             filtered_buttons = [button for button in buttons if
                                 "sm-product-size__button--disabled" not in button.get_attribute("class")]
@@ -120,14 +112,15 @@ async def main():
             # Проверка наличия кнопок
             if not filtered_buttons:
                 # Если нет доступных кнопок, прерываем цикл
-                break
+                continue
 
             # Выбор случайной кнопки из отфильтрованного списка
             random_button = random.choice(filtered_buttons)
 
             random_button.click()
-            await asyncio.sleep(2)
 
+            await asyncio.sleep(2)
+            driver.set_window_position(-500, 0)
             try:
                 element = driver.find_element(By.CSS_SELECTOR, 'a.sm-product-pickup__link.sm-link.sm-link_darkblue')
                 text = element.text
@@ -138,6 +131,8 @@ async def main():
                     button = driver.find_element(By.CSS_SELECTOR, '[data-test-id="add-to-cart-btn"]')
                     button.click()
                     await asyncio.sleep(2)
+                    is_point_successful = True
+
                     txt.append_product_number(product_id)
                     break
                 else:
@@ -146,62 +141,64 @@ async def main():
             except:
                 continue
 
-        is_point_successful = True
-
         try:
             button = driver.find_element(By.CSS_SELECTOR,
                                          '.sm-button.sm-buy-button-new__go-to-cart[data-selenium="smButton"][href="/cart/"]')
             button.click()
             await asyncio.sleep(2)
-        except:
+        except ElementClickInterceptedException:
             button = driver.find_element(By.CSS_SELECTOR,
                                          '.sm-button.sm-product-recommendations-dialog__action-button.sm-button--blue.sm-button--s[data-selenium="smButton"][href="/cart/"]')
             button.click()
             await asyncio.sleep(2)
-
-        elements = driver.find_elements(By.CSS_SELECTOR, '[data-selenium="cartTitle"]')
-
-        if len(elements) == 0:
-            driver.get('https://www.sportmaster.ru/cart/')
-            # print("перешел по cart")
-            await asyncio.sleep(5)
-
-        button = driver.find_element(By.CSS_SELECTOR, '[data-selenium="pickup"]')
-
-        button.click()
-        await asyncio.sleep(5)
-
-        xpath_expression = '//*[@data-selenium="pickup-point" and contains(@id, "SHOP")]'
-
-        button = driver.find_element(By.XPATH, xpath_expression)
-
-        button.click()
-        await asyncio.sleep(2)
-
-        button = driver.find_element(By.CSS_SELECTOR, '[data-selenium="select-btn"]')
-
-        button.click()
-        await asyncio.sleep(2)
+        except Exception as e:
+            elements = driver.find_elements(By.CSS_SELECTOR, '[data-selenium="cartTitle"]')
+            if len(elements) == 0:
+                driver.get('https://www.sportmaster.ru/cart/')
+                await asyncio.sleep(5)
 
         try:
+            elements = driver.find_elements(By.CSS_SELECTOR, '[data-selenium="cartTitle"]')
+            if len(elements) == 0:
+                driver.get('https://www.sportmaster.ru/cart/')
+                await asyncio.sleep(5)
+            driver.set_window_position(-600, 0)
+            button = driver.find_element(By.CSS_SELECTOR, '[data-selenium="pickup"]')
+
+            button.click()
+            await asyncio.sleep(5)
+
+            xpath_expression = '//*[@data-selenium="pickup-point" and contains(@id, "SHOP")]'
+
+            button = driver.find_element(By.XPATH, xpath_expression)
+
+            button.click()
+            await asyncio.sleep(2)
+
+            button = driver.find_element(By.CSS_SELECTOR, '[data-selenium="select-btn"]')
+
+            button.click()
+            await asyncio.sleep(2)
+
             button = driver.find_element(By.CSS_SELECTOR, '.payment-method.sm-payment-type[data-selenium="IN_STORE"]')
             button.click()
             await asyncio.sleep(2)
         except:
             pass
-        # print("успех")
 
+    except Exception as e:
+        raise e
 
     finally:
-        if is_point_successful is True:
-            excel.finally_add(cookie_excel)
-        else:
-            excel.finally_add(cookie_excel, "IN")
         await asyncio.sleep(2)
         if 'driver' in locals():
             driver.close()
             driver.quit()
             del driver
+
+
+async def async_main(proxy, cookie):
+    await main(proxy, cookie)
 
 
 def generate_hash(length):
@@ -210,56 +207,17 @@ def generate_hash(length):
     return hash
 
 
-def run_in_thread(loop):
-    asyncio.set_event_loop(loop)
-    try:
-        loop.run_until_complete(main())
-    except Exception as e:
-        print("Error in thread: ", e)
-
-
 if __name__ == "__main__":
-    # arrays_in = sys.argv
-    # serialized_data = arrays_in[1]
-    # config = json.loads(serialized_data)
+    arrays_in = sys.argv
+    proxy = arrays_in[1].strip()
+    cookie = arrays_in[2].strip()
 
-    # try:
-    #     button = 1
-    #     button.click()
-    # except Exception as e:
-    #     # raise "Вызвал ошибку"
-    #     traceback.print_exc()
-
-    for i in range(1):
-        try:
-            # asyncio.run(main())
-            loop1 = asyncio.new_event_loop()
-            # loop2 = asyncio.new_event_loop()
-            # loop3 = asyncio.new_event_loop()
-
-            with concurrent.futures.ThreadPoolExecutor() as executor:
-                executor.submit(run_in_thread, loop1)
-                # executor.submit(run_in_thread, loop2)
-                # executor.submit(run_in_thread, loop3)
-
-            result = {
-                "result": True
-            }
-            json_data = json.dumps(result)
-            # sys.stdout.flush()
-            print(json_data)
-        except Exception as e:
-            hash = generate_hash(10)
-            print(e)
-            # directory = 'error_files'
-            # filepath = os.path.join(directory, f"{hash}.txt")
-            # with open(filepath, "a") as file:
-            #     file.write(str(e))
-            #
-            # result = {
-            #     "result": False,
-            #     "number": hash
-            # }
-            # json_data = json.dumps(result)
-            # sys.stdout.flush()
-            # print(json_data)
+    # proxy = "socks5://MEwluo:Ljeic0GMlo@188.130.221.118:5501"
+    # cookie = '[{"domain": "www.sportmaster.ru","name": "SMID","path": "/","value": "eyJhbGciOiJSUzI1NiJ9.eyJqdGkiOiIzMjU4MzgwMS01NmY2LTRiZTgtYWQ2Yy0xOGU2NDZlYjRiYmMiLCJpc3MiOiJTTTMwIiwiaWF0IjoxNjg2MDY5MjAxLCJhdWQiOiJzcG9ydG1hc3RlciIsImFuVCI6IjJiZmM1MWIwLWViNzgtNDEzMi1iZDEyLTg0NmQyNGMxZTJhNiIsImFuUCI6IjUxZjczMmUwLTY0N2ItNDY2OC05NDU2LTJjZWQwMjA4ZjAyOSIsImFuVSI6IjEwMDAwMDAwNjM4OTAzMTQzOCIsImNhblAiOiJBSUNNcmZNL3Q1ZVlzbWl3N1k0NDlidjRtRVprRkp4K2FaVWFXMFdRTDFacGJ5OTZwalQzblYrNFA3R0cxLzVrQzliZEx1ZkwwQkNWTVlLVTduL1BsYVh4NzQ3Z0syVXlMNysyTHJvS1FvdjEwM29OaE5qd2RMVS9mL1ZjTGxYRzFqMTZWWjBXcVV6a0JoOGszUlJaUEF5RWVIYzdvUnhnUGdLcTF1MnlNbEs1YllzU1lCUnllckhDalRXSFliSXA1endxU1N1SHNvQ1haVzRFWEY5YjBJdU9MOHlyMDZjU1BmSUcxYWR6ZEJ3eUhqK3lOQis1ZGpudEpWMXZJZXM0bTFzPSIsImNhblQiOiJBSUFnQlhDL3ovUVVnVzRsQXE0Qko5bkJxR2dqNnJVRkc1RmFkdDBBdEg3YnJVQjA1dkVNSFptaEpVYTZFWW5aYjRGUVJoVEdvaVlnZnh3cEoweHNRaHBUMWJkalNnaEFoT05HdmhEMWZRMXVyUHIrUUhXcWZpcG5RWVlOYlp5MjZuK25aamh5eFdiSHRFUVhMNFFnZlhCRjBEK1hHMmphamtyL05FYVlrdDhFcnQzNXkzNlpHZGh3ckxpb25EcURmanFlZ1I1VFRBU3RqSndkRDBwbVRMRHh0dUVQanZlczFVOWhCMmd1Vzc4R3YxcUpDaTFCS0Z2RncwK1kwSTE0UFVrPSIsImF1VCI6ImNmZDIyNmNkLTQwNDgtNGNhYS1iZWU1LWQ2ZGM5YzA3OWNmZCIsImF1UCI6IjEwMDAwMDAwNjM4OTAzMDU2MCIsImNhdVQiOiJBSUFQM1dGbGJBK25paG9IWi94VDBNcE01bzdUZ05TbVd0cGNsN3p3bmJJL1N6c0s2NERtOHJsaDBiSFF6eGRkbk5mYXE2cjBPQlB1T0VNRFhZNE9FWEh6dnlCRkgrNjVNNHhyWDhVS0dLSk95MHdwRFgyVndNbVRGMnY4ZGkrdkIvTkdQQWx5ZE85NmhpbjBIL1Jqd0FaMlpmT1lwRzVkNnNwTEViTEwrOGpWa1FFS1UyVy9RaVVvWVIwNzh2VVFtVGdGQVdScFg4UmVTdFpkcFhGMndGaVl6cW4vbFhCekkzWVVNWEQ4ekJseVAyRk1GV1ZRZXk4TUgvbGthRkxMc0JZPSIsInYiOiJWMiJ9.OncHOXSK5sVk0BJvgk1hQZ1HQFsFr540NHLb6W4K924Z0aEWcGaRZoWj7-IjtSme40odGLbRi9m1tnbuv8ujARkLBk79z4Qg8UNZy_dXESq_wC4kKNxbnoIC4NP_3VMJFPSFiXhuYJbOWM1VgQMGAqlK6Qq_AE9ZBfiiZBUJIq2C9yhkQ8y9l0ZD0JbHt-tIPYJRZIHXR0xi3HFqhcdYjntXqkyIJoNlrGHTVSWfmkVoska1ogPCSyOH4c8maWpb4hxdff9AYaBI-ULMd0vSvTkYHIy1DjC4pQPil6X5JNrwl3g6_5Wz11oo5THR89sKP_kVmK5hswERVsiHc-YPRA"}]'
+    try:
+        asyncio.run(async_main(proxy, cookie))
+    except Exception as e:
+        hash = generate_hash(10)
+        print(e)
+    finally:
+        print(is_point_successful)
